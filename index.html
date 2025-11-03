@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PWGen Web (Argon2id · HKDF · DRBG)</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;max-width:960px;margin:24px auto;padding:0 12px}
+  h1{font-size:20px;margin:0 0 12px}
+  fieldset{border:1px solid #ddd;border-radius:12px;margin:12px 0;padding:12px}
+  label{display:block;margin:6px 0 2px;font-size:13px;color:#333}
+  input,select,textarea{width:100%;padding:8px;border:1px solid #ccc;border-radius:10px;font-size:14px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .btn{display:inline-block;margin-top:10px;padding:10px 14px;border-radius:10px;border:0;background:#0b5cff;color:#fff;font-weight:600;cursor:pointer}
+  .btn:disabled{opacity:0.6;cursor:not-allowed}
+  .mono{font-family:ui-monospace,Consolas,Monaco,monospace}
+  .out{font-size:18px;word-break:break-all;padding:8px;background:#f7f7f7;border-radius:10px;border:1px solid #e3e3e3}
+  small{color:#666}
+</style>
+<!-- Argon2 WASM (argon2-browser) -->
+<script src="https://cdn.jsdelivr.net/npm/argon2-browser/dist/argon2-bundled.min.js"></script>
+<!-- BLAKE2b (blakejs) -->
+<script src="https://cdn.jsdelivr.net/npm/blakejs@1.2.1/blake2b.min.js"></script>
+</head>
+<body>
+  <h1>PWGen Web</h1>
+  <p><small>Код считает <b>локально в браузере</b>. Ничего никуда не уходит.</small></p>
+
+  <fieldset>
+    <legend>Секреты</legend>
+    <label>Мастер-фраза</label>
+    <input id="master" type="password" class="mono" placeholder="Diceware / длинный пароль" autocomplete="current-password"/>
+
+    <label>Капсула (base64, из вольта) — сохранится в локальном хранилище устройства</label>
+    <input id="capsule" class="mono" placeholder="например: 3q2+7w== (32 байта base64)"/>
+    <button class="btn" id="saveCaps">Сохранить капсулу на устройстве</button>
+    <small>Найдёте в поле <span class="mono">"capsule"</span> после расшифровки вольта (или добавьте команду <span class="mono">capsule</span> в CLI — ниже поясню).</small>
+  </fieldset>
+
+  <fieldset>
+    <legend>Идентификаторы</legend>
+    <div class="row">
+      <div>
+        <label>Сайт (домен eTLD+1)</label>
+        <input id="site" class="mono" placeholder="example.com / vk.com"/>
+      </div>
+      <div>
+        <label>Логин</label>
+        <input id="login" class="mono" placeholder="you@mail.com / +79990000000"/>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Версия алгоритма</label>
+        <input id="version" class="mono" value="v1"/>
+      </div>
+      <div>
+        <label>Счётчик c (ротации)</label>
+        <input id="counter" class="mono" type="number" value="0" min="0"/>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>rseed (hex, 16 байт)</label>
+        <input id="rseed" class="mono" placeholder="(hex на 32 символа)"/>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <button class="btn" id="genRseed" type="button">Сгенерировать rseed</button>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Политика пароля</legend>
+    <div class="row">
+      <div>
+        <label>Длина</label>
+        <input id="len" type="number" class="mono" value="24" min="8" max="256"/>
+      </div>
+      <div>
+        <label>Предзаданный профиль</label>
+        <select id="profile">
+          <option value="">— не менять —</option>
+          <option value="strict">strict (24, lower+upper+digits+symbols)</option>
+          <option value="hard">hard (40, post-quantum ~130 бит)</option>
+          <option value="ultra">ultra (64)</option>
+          <option value="legacy">legacy (16, буквы+цифры)</option>
+          <option value="pin">pin (10 digits)</option>
+        </select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Классы</label>
+        <input id="classes" class="mono" value="lower,upper,digits,symbols"/>
+      </div>
+      <div>
+        <label>Запрещённые символы</label>
+        <input id="forbid" class="mono" value="&quot;'` "/>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>KDF (Argon2id)</legend>
+    <div class="row">
+      <div>
+        <label>Память (MiB)</label>
+        <input id="mem" class="mono" type="number" value="128" min="16" max="512"/>
+      </div>
+      <div>
+        <label>Время (итерации t)</label>
+        <input id="time" class="mono" type="number" value="3" min="1" max="6"/>
+      </div>
+    </div>
+  </fieldset>
+
+  <button class="btn" id="go">Сгенерировать</button>
+
+  <p><label>Пароль:</label></p>
+  <div class="out mono" id="out"></div>
+  <p><small id="meta"></small></p>
+
+<script>
+const enc = (s)=> new TextEncoder().encode(s);
+const dec = (b)=> new TextDecoder().decode(b);
+const hexToBytes = (h)=> {
+  if(!h) return new Uint8Array([]);
+  h = h.trim();
+  if (h.length % 2) throw new Error("Нечётный hex");
+  const out = new Uint8Array(h.length/2);
+  for(let i=0;i<out.length;i++) out[i] = parseInt(h.substr(i*2,2),16);
+  return out;
+}
+const bytesToHex = (b)=> [...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+const concat = (...arrs)=>{
+  let len = arrs.reduce((s,a)=> s+a.length, 0);
+  const out = new Uint8Array(len);
+  let o=0; for(const a of arrs){ out.set(a,o); o+=a.length; }
+  return out;
+};
+
+// ----- HMAC(BLAKE2b) и HKDF на BLAKE2b -----
+const BLAKE_OUT = 64, BLOCK = 128;
+function blake2bHash(msg, outlen=64){ return blakejs.blake2b(msg, null, outlen) }
+function hmac_blake2b(key, msg, outlen=BLAKE_OUT){
+  if(key.length > BLOCK) key = blake2bHash(key, BLAKE_OUT);
+  const k = new Uint8Array(BLOCK); k.set(key);
+  const ipad = new Uint8Array(BLOCK); const opad = new Uint8Array(BLOCK);
+  for(let i=0;i<BLOCK;i++){ ipad[i]=0x36 ^ k[i]; opad[i]=0x5c ^ k[i]; }
+  const inner = blake2bHash(concat(ipad, msg), BLAKE_OUT);
+  return blake2bHash(concat(opad, inner), outlen);
+}
+function hkdf_expand_blake2b(prk, info, L=32){ // один блок достаточно
+  return hmac_blake2b(prk, concat(info, new Uint8Array([1])), L);
+}
+function hkdf_extract_blake2b(salt, ikm, L=32){
+  return hmac_blake2b(salt, concat(ikm, new Uint8Array([1])), L);
+}
+
+// ----- DRBG на HMAC(BLAKE2b) -----
+function* drbg_stream(key){
+  let ctr = 0;
+  let buf = new Uint8Array();
+  while(true){
+    if (buf.length === 0){
+      const c = new Uint8Array(8);
+      new DataView(c.buffer).setBigUint64(0, BigInt(ctr));
+      buf = hmac_blake2b(key, concat(enc("pwgen|drbg"), c), 64);
+      ctr++;
+    }
+    yield buf[0]; buf = buf.slice(1);
+  }
+}
+function randBelow(it, n){ // равномерно [0..n]
+  if(n<=0) return 0;
+  while(true){
+    const b0 = it.next().value, b1=it.next().value, b2=it.next().value, b3=it.next().value;
+    const val = (b0<<24) | (b1<<16) | (b2<<8) | b3;
+    const u = (val>>>0); // to uint32
+    const limit = 0x100000000 - (0x100000000 % (n+1));
+    if(u < limit) return u % (n+1);
+  }
+}
+function permute(arr, key){
+  const it = drbg_stream(key);
+  const a = arr.slice();
+  for(let i=a.length-1;i>0;i--){
+    const j = randBelow(it, i);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ----- Наборы символов -----
+const CLASSES = {
+  lower: "abcdefghijklmnopqrstuvwxyz",
+  upper: "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  digits:"0123456789",
+  symbols:"!#$%&()*+,-./:;<=>?@[]^_{|}~"
+};
+function buildAlphabet(policy){
+  let allow=[], required=[];
+  for(const cls of policy.classes){
+    const s = CLASSES[cls];
+    allow.push(...s.split(''));
+    required.push(new Set(s.split('')));
+  }
+  if (policy.forbid){
+    const forb = policy.forbid.split('');
+    allow = allow.filter(ch => !forb.includes(ch));
+  }
+  if(!allow.length) throw new Error("Пустой алфавит");
+  return [allow, required];
+}
+function satisfies(pwd, requiredSets){
+  const S = new Set(pwd.split(''));
+  for(const req of requiredSets){ let ok=false; for(const ch of req){ if(S.has(ch)){ ok=true; break; } } if(!ok) return false; }
+  return true;
+}
+
+// ----- Основная генерация -----
+async function genPassword(master, capsuleB64, site_id, login, policy, v, c, rseedHex, memMiB=128, t=3){
+  if(!master) throw new Error("Мастер-фраза пуста");
+  if(!site_id) throw new Error("site_id пуст");
+  if(!login) throw new Error("login пуст");
+
+  const rseed = hexToBytes(rseedHex);
+  if(rseed.length !== 16) throw new Error("rseed должен быть 16 байт (32 hex-символа)");
+
+  const policyStr = JSON.stringify(policy, Object.keys(policy).sort());
+  const context = enc(`pwgen|${v}|${site_id}|${login}|${policyStr}|c=${c}|r=${rseedHex}`);
+
+  const salt = blake2bHash(concat(enc("salt|"), context), 32);
+
+  // Argon2id -> PRK (32B)
+  const argon = await argon2.hash({
+    pass: master,
+    salt: salt,
+    type: argon2.ArgonType.Argon2id,
+    time: t,
+    mem: memMiB*1024,   // KiB
+    parallelism: 1,
+    hashLen: 32
+  });
+  let prk = new Uint8Array(argon.hash);
+
+  // Смешиваем капсулу (как в CLI: HKDF-Extract с солью prk)
+  if(capsuleB64 && capsuleB64.trim().length){
+    const cap = Uint8Array.from(atob(capsuleB64.trim()), c=>c.charCodeAt(0));
+    prk = hkdf_extract_blake2b(prk, cap, 32);
+  }
+
+  const Kpwd  = hkdf_expand_blake2b(prk, concat(enc("password|"), context), 32);
+  const Kperm = hkdf_expand_blake2b(prk, concat(enc("alphabet|"), context), 32);
+
+  const [allow, requiredSets] = buildAlphabet(policy);
+  const A = permute(allow, Kperm);
+
+  const it = drbg_stream(Kpwd);
+  const M = A.length, T = Math.floor(256/M)*M;
+  const L = policy.length;
+  let out = [];
+  while(out.length < L){
+    const b = it.next().value;
+    if (b < T) out.push(A[b % M]);
+  }
+  out = permute(out, Kpwd);
+  const pwd = out.join('');
+
+  // если классы не соблюдены — пусть пользователь увеличит c (как в CLI)
+  if(!satisfies(pwd, requiredSets)){
+    throw new Error("Пароль не удовлетворяет классам: увеличьте c и повторите");
+  }
+  return {pwd, used_c:c};
+}
+
+// ----- UI -----
+const $ = (id)=>document.getElementById(id);
+(function restoreCapsule(){ const v=localStorage.getItem("pw_capsule_b64"); if(v) $("capsule").value=v; })();
+
+$("saveCaps").onclick = ()=>{ localStorage.setItem("pw_capsule_b64", $("capsule").value.trim()); alert("Капсула сохранена в локальном хранилище этого устройства."); };
+
+$("genRseed").onclick = ()=>{
+  const b = new Uint8Array(16); crypto.getRandomValues(b);
+  $("rseed").value = bytesToHex(b);
+};
+
+$("profile").onchange = ()=>{
+  const p = $("profile").value;
+  if(!p) return;
+  const presets = {
+    strict:{length:24, classes:"lower,upper,digits,symbols", forbid:"\"'` "},
+    legacy:{length:16, classes:"lower,upper,digits", forbid:"\"'` "},
+    pin:{length:10, classes:"digits", forbid:""},
+    hard:{length:40, classes:"lower,upper,digits,symbols", forbid:"\"'` "},
+    ultra:{length:64, classes:"lower,upper,digits,symbols", forbid:"\"'` "}
+  };
+  const cfg = presets[p];
+  $("len").value = cfg.length;
+  $("classes").value = cfg.classes;
+  $("forbid").value = cfg.forbid;
+};
+
+$("go").onclick = async ()=>{
+  try{
+    $("go").disabled = true; $("out").textContent = "Считаю…";
+    const master = $("master").value;
+    const capsule = $("capsule").value.trim() || localStorage.getItem("pw_capsule_b64") || "";
+    const site = $("site").value.trim().toLowerCase();
+    const login = $("login").value.trim();
+    const v = $("version").value.trim()||"v1";
+    const c = parseInt($("counter").value||"0",10);
+    const rseedHex = $("rseed").value.trim();
+    const policy = {
+      length: parseInt($("len").value,10),
+      classes: $("classes").value.split(",").map(s=>s.trim()).filter(Boolean),
+      forbid: $("forbid").value
+    };
+    const mem = parseInt($("mem").value,10);
+    const time = parseInt($("time").value,10);
+
+    const {pwd, used_c} = await genPassword(master, capsule, site, login, policy, v, c, rseedHex, mem, time);
+    $("out").textContent = pwd;
+    $("meta").textContent = `OK · used c=${used_c} · policy len=${policy.length} · classes=${policy.classes.join(",")}`;
+    // копируем в буфер
+    await navigator.clipboard.writeText(pwd);
+  }catch(e){
+    $("out").textContent = "";
+    $("meta").textContent = `Ошибка: ${e.message||e}`;
+  }finally{
+    $("go").disabled = false;
+  }
+};
+</script>
+</body>
+</html>
