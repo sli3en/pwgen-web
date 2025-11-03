@@ -151,9 +151,9 @@ const concat = (...arrs)=>{
 };
 
 // ----- BLAKE2b (совместимость с разными бандлами) -----
-function blake2bHash(msg, outlen=64){
-  const fn = (window.blakejs && window.blakejs.blake2b) || window.blake2b;
-  if (!fn) throw new Error("blake2b не найден (скрипт blakejs не загрузился)");
+function blake2bHash(msg, outlen = 64) {
+  const fn = window.blakejs && window.blakejs.blake2b;
+  if (!fn) throw new Error("blake2b не найден (бандл blake.min.js не загрузился)");
   return fn(msg, null, outlen);
 }
 
