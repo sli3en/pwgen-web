@@ -17,16 +17,11 @@
   .out{font-size:18px;word-break:break-all;padding:8px;background:#f7f7f7;border-radius:10px;border:1px solid #e3e3e3}
   small{color:#666}
 </style>
-<!-- Argon2 WASM (argon2-browser) -->
-<script
-  src="https://cdn.jsdelivr.net/npm/blakejs@1.2.1/blake2b.min.js"
-  onerror="var s=document.createElement('script'); s.src='https://unpkg.com/blakejs@1.2.1/blake2b.min.js'; document.head.appendChild(s);">
-</script>
-<!-- BLAKE2b (даёт window.blakejs.blake2b) -->
-<script
-  src="https://cdn.jsdelivr.net/npm/blakejs@1.2.1/blake.min.js"
-  onerror="var s=document.createElement('script'); s.src='https://unpkg.com/blakejs@1.2.1/blake.min.js'; document.head.appendChild(s);">
-</script>
+<!-- BLAKE2b (глобально даёт window.blake2b) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/blakejs/1.2.1/blake2b.min.js"></script>
+
+<!-- Argon2 WASM -->
+<script src="https://cdn.jsdelivr.net/npm/argon2-browser/dist/argon2-bundled.min.js"></script>
 </head>
 <body>
   <h1>PWGen Web</h1>
