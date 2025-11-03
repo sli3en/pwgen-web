@@ -19,8 +19,8 @@
 </style>
 <!-- Argon2 WASM (argon2-browser) -->
 <script src="https://cdn.jsdelivr.net/npm/argon2-browser/dist/argon2-bundled.min.js"></script>
-<!-- BLAKE2b (blakejs) -->
-<script src="https://cdn.jsdelivr.net/npm/blakejs@1.2.1/blake2b.min.js"></script>
+<!-- ВАЖНО: подключаем полный бандл blakejs с глобальным window.blakejs -->
+<script src="https://cdn.jsdelivr.net/npm/blakejs@1.2.1/blakejs.min.js"></script>
 </head>
 <body>
   <h1>PWGen Web</h1>
@@ -34,7 +34,7 @@
     <label>Капсула (base64, из вольта) — сохранится в локальном хранилище устройства</label>
     <input id="capsule" class="mono" placeholder="например: 3q2+7w== (32 байта base64)"/>
     <button class="btn" id="saveCaps">Сохранить капсулу на устройстве</button>
-    <small>Найдёте в поле <span class="mono">"capsule"</span> после расшифровки вольта (или добавьте команду <span class="mono">capsule</span> в CLI — ниже поясню).</small>
+    <small>Найдёте в поле <span class="mono">"capsule"</span> после расшифровки вольта (или через команду <span class="mono">capsule</span> в CLI).</small>
   </fieldset>
 
   <fieldset>
@@ -141,9 +141,15 @@ const concat = (...arrs)=>{
   return out;
 };
 
+// ----- BLAKE2b (совместимость с разными бандлами) -----
+function blake2bHash(msg, outlen=64){
+  const fn = (window.blakejs && window.blakejs.blake2b) || window.blake2b;
+  if (!fn) throw new Error("blake2b не найден (скрипт blakejs не загрузился)");
+  return fn(msg, null, outlen);
+}
+
 // ----- HMAC(BLAKE2b) и HKDF на BLAKE2b -----
 const BLAKE_OUT = 64, BLOCK = 128;
-function blake2bHash(msg, outlen=64){ return blakejs.blake2b(msg, null, outlen) }
 function hmac_blake2b(key, msg, outlen=BLAKE_OUT){
   if(key.length > BLOCK) key = blake2bHash(key, BLAKE_OUT);
   const k = new Uint8Array(BLOCK); k.set(key);
@@ -246,7 +252,7 @@ async function genPassword(master, capsuleB64, site_id, login, policy, v, c, rse
   });
   let prk = new Uint8Array(argon.hash);
 
-  // Смешиваем капсулу (как в CLI: HKDF-Extract с солью prk)
+  // Смешиваем капсулу (HKDF-Extract с солью prk)
   if(capsuleB64 && capsuleB64.trim().length){
     const cap = Uint8Array.from(atob(capsuleB64.trim()), c=>c.charCodeAt(0));
     prk = hkdf_extract_blake2b(prk, cap, 32);
@@ -269,7 +275,6 @@ async function genPassword(master, capsuleB64, site_id, login, policy, v, c, rse
   out = permute(out, Kpwd);
   const pwd = out.join('');
 
-  // если классы не соблюдены — пусть пользователь увеличит c (как в CLI)
   if(!satisfies(pwd, requiredSets)){
     throw new Error("Пароль не удовлетворяет классам: увеличьте c и повторите");
   }
@@ -324,7 +329,6 @@ $("go").onclick = async ()=>{
     const {pwd, used_c} = await genPassword(master, capsule, site, login, policy, v, c, rseedHex, mem, time);
     $("out").textContent = pwd;
     $("meta").textContent = `OK · used c=${used_c} · policy len=${policy.length} · classes=${policy.classes.join(",")}`;
-    // копируем в буфер
     await navigator.clipboard.writeText(pwd);
   }catch(e){
     $("out").textContent = "";
